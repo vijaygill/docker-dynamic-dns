@@ -8,23 +8,28 @@ import datetime
 from pathlib import Path
 from textwrap import wrap
 import time
+import socket
 
-from dnslib import DNSLabel, QTYPE, RR, dns
+from dnslib import DNSLabel, QTYPE, RR, dns, DNSRecord
 from dnslib.proxy import ProxyResolver
-from dnslib.server import DNSServer
+from dnslib.server import DNSServer, DNSHandler
 
 import argparse
 import docker
 import csv
+import threading
+import copy
+
+lock = threading.Lock()
 
 SERIAL_NO = int((datetime.datetime.utcnow() - datetime.datetime(1970, 1, 1)).total_seconds())
 
-handler = logging.StreamHandler()
-handler.setLevel(logging.INFO)
-handler.setFormatter(logging.Formatter("%(asctime)s: %(message)s", datefmt="%H:%M:%S"))
+log_handler = logging.StreamHandler()
+log_handler.setLevel(logging.INFO)
+log_handler.setFormatter(logging.Formatter("%(asctime)s: %(message)s", datefmt="%H:%M:%S"))
 
 logger = logging.getLogger(__name__)
-logger.addHandler(handler)
+logger.addHandler(log_handler)
 logger.setLevel(logging.INFO)
 
 TYPE_LOOKUP = {
@@ -45,30 +50,15 @@ TYPE_LOOKUP = {
 }
 
 class Record:
-    def __init__(self, rname, rtype, args):
-        self._rname = DNSLabel(rname)
+    def __init__(self, rr):
+        self.rr = rr
+        self._rname = rr.rname
+        self.rname = str(rr.rname)
+
+        rtype = QTYPE.get(rr.rtype)
 
         rd_cls, self._rtype = TYPE_LOOKUP[rtype]
 
-        if self._rtype == QTYPE.SOA and len(args) == 2:
-            # add sensible times to SOA
-            args += (SERIAL_NO, 3600, 3600 * 3, 3600 * 24, 3600),
-
-        if self._rtype == QTYPE.TXT and len(args) == 1 and isinstance(args[0], str) and len(args[0]) > 255:
-            # wrap long TXT records as per dnslib"s docs.
-            args = wrap(args[0], 255),
-
-        if self._rtype in (QTYPE.NS, QTYPE.SOA):
-            ttl = 3600 * 24
-        else:
-            ttl = 300
-
-        self.rr = RR(
-            rname=self._rname,
-            rtype=self._rtype,
-            rdata=rd_cls(*args),
-            ttl=ttl,
-        )
 
     def match(self, q):
         return q.qname == self._rname and (q.qtype == QTYPE.ANY or q.qtype == self._rtype)
@@ -77,13 +67,13 @@ class Record:
         return self._rtype == QTYPE.SOA and q.qname.matchSuffix(self._rname)
 
     def __str__(self):
-        return str(self.rr)
+        return "{0}[{1}] - {2}".format(self._rname, self._rtype, self.rr) 
 
 
 class Resolver(ProxyResolver):
     def __init__(self, domains, upstream, docker_socket, static_list_file = None):
         super().__init__(upstream, 53, 5)
-        self.records = []
+        self.records = {}
         self.docker_socket = None
         self.static_list_file = None
         self.last_load_time_static = None
@@ -118,19 +108,20 @@ class Resolver(ProxyResolver):
                 self.last_load_time_docker = dt
         
         if records:
-            self.records = records
-            for rec in self.records:
+            for rec in records:
+                self.records[rec.rname] = rec
                 logger.info("{0}".format(rec))
             logger.info("{0} zone resource records generated.".format(len(self.records)))
 
-    def create_record(self, source, name, ip_address):
+    def create_record(self, source, zone_line):
         res = None
         try:
-            res = Record(name, "A", (ip_address, ))
-            logger.info(" {0}: {1} - {2}".format(source, len(self.records), record))
+            ttl = 300
+            rrs = RR.fromZone(zone_line)
+            res = Record(rrs[0])
+            logger.debug("{0}: {1} - {2}".format(source, len(self.records), res))
         except Exception as e:
-            #raise RuntimeError(f"Error processing line ({e.__class__.__name__}: {e}) "{line.strip()}"") from e
-            pass
+            logger.error("{0}: name: {1} ip_address: {2} -> {3}".format(e.__class__.__name__, name, ip_address, e))
         return res
 
     def needs_update(self):
@@ -161,17 +152,18 @@ class Resolver(ProxyResolver):
         assert self.static_list_file.exists(), "file {0} does not exist".format(self.static_list_file)
         logger.info("Loading static ip addresses from file - {0}".format(self.static_list_file))
         res = []
-        with open(static_list_file, "r", newline="") as csvfile:
+        with open(self.static_list_file, "r", newline="") as csvfile:
             reader = csv.DictReader(csvfile, fieldnames=["name", "ip_address"], delimiter="\t")
             for row in reader:
                 try:
                     name = row["name"]
                     ip_address = row["ip_address"]
-                    rec = self.create_record("file", name, ip_address)
+                    zone_line = "{0} 300 IN A {1}".format(name, ip_address)
+                    rec = self.create_record("file", zone_line)
                     if rec:
                         res.append(rec)
                 except Exception as e:
-                    #raise RuntimeError(f"Error processing line ({e.__class__.__name__}: {e}) "{row}"") from e
+                    logger.error("{0}: {1}".format(e.__class__.__name__, e))
                     pass
         records_time = datetime.datetime.utcnow()
         return (records_time, res)
@@ -188,42 +180,39 @@ class Resolver(ProxyResolver):
             ip_address = container.attrs["NetworkSettings"]["Networks"][networkmode]["IPAddress"]
             if ip_address:
                 #logger.info("{0:<30} {1:<30} - {2:<18}".format(name + ":" + networkmode, hostname, ip_address))
-                names = [ name ] + [ name + "." + x for x in self.domains]
+                names = []
+                names += [ name ] 
+                names += [ name + "." + x for x in self.domains]
                 for name in names:
-                    rec = self.create_record("docker", name, ip_address)
-                    if rec:
-                        res.append(rec)
+                    try:
+                        zone_line = "{0} 300 IN A {1}".format(name, ip_address)
+                        rec = self.create_record("docker", zone_line)
+                        if rec:
+                            res.append(rec)
+                    except Exception as e:
+                        logger.error("{0}: {1}".format(e.__class__.__name__, e))
+                        pass
         records_time = datetime.datetime.utcnow()
         return (records_time, res)
 
     def resolve(self, request, handler):
+        rname = str(request.q.qname)
         type_name = QTYPE[request.q.qtype]
         reply = request.reply()
-        for record in self.records:
-            if record.match(request.q):
-                reply.add_answer(record.rr)
 
-        if reply.rr:
-            logger.info("Found zone for {0}[{1}], {2} replies.".format(request.q.qname, type_name, len(reply.rr)))
+        if rname in self.records.keys():
+            record = self.records[rname]
+            reply.add_answer(record.rr)
+            logger.info("***** {0}[{1}]: resolved data ({2} replies).".format(request.q.qname, type_name, len(reply.rr)))
             return reply
-
-        # no direct zone so look for an SOA record for a higher level zone
-        for record in self.records:
-            if record.sub_match(request.q):
-                reply.add_answer(record.rr)
-
-        if reply.rr:
-            logger.info("Found higher level SOA resource for {0}[{1}]".format(request.q.qname, type_name))
-            return reply
-
-        logger.info("No local zone found, proxying {0}[{1}]".format(request.q.qname, type_name))
-        return super().resolve(request, handler)
-
+        
+        upstream_data = super().resolve(request, handler)
+        logger.info("***** {0}[{1}]: upstream data: {2}.".format(request.q.qname, type_name, upstream_data))
+        return upstream_data
 
 def handle_sig(signum, frame):
     logger.info("pid={0}, got signal: {1}, stopping...".format(os.getpid(), signal.Signals(signum).name))
     exit(0)
-
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_sig)
@@ -245,6 +234,7 @@ if __name__ == "__main__":
     if args.domain:
         domains.append(args.domain)
     resolver = Resolver(domains, args.upstream, args.docker_socket, args.static_list_file)
+
 
     servers = []
     if args.udp > 0:
