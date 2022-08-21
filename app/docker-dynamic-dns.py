@@ -212,11 +212,11 @@ class Resolver(ProxyResolver):
         if rname in self.records.keys():
             record = self.records[rname]
             reply.add_answer(record.rr)
-            logger.info("***** {0}[{1}]: resolved from local records.".format(request.q.qname, type_name))
+            logger.info("{0}[{1}]: resolved from local records.".format(request.q.qname, type_name))
             return reply
         
         upstream_data = super().resolve(request, handler)
-        logger.info("***** {0}[{1}]: resolved from upstream DNS server".format(request.q.qname, type_name))
+        logger.info("{0}[{1}]: resolved from upstream DNS server".format(request.q.qname, type_name))
         return upstream_data
 
 def handle_sig(signum, frame):
