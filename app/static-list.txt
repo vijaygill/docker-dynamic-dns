@@ -1,3 +1,0 @@
-example.com	1.2.3.4
-bbbccc.com	192.168.0.1
-blah.gillsoft.home 77.88.99.00

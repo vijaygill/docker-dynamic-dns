@@ -71,12 +71,12 @@ class Record:
 
 
 class Resolver(ProxyResolver):
-    def __init__(self, domains, upstream, docker_socket, static_list_file = None):
+    def __init__(self, domains, upstream, docker_socket, zones_file = None):
         super().__init__(upstream, 53, 5)
         self.records = {}
         self.docker_socket = None
-        self.static_list_file = None
-        self.last_load_time_static = None
+        self.zones_file = None
+        self.last_load_time_zones = None
         self.last_load_time_docker = None
 
         self.domains = domains
@@ -87,19 +87,19 @@ class Resolver(ProxyResolver):
             logger.info("Docker socket: {0}".format(docker_socket))
             self.docker_socket = docker_socket
             self.docker_client = docker.DockerClient(base_url = docker_socket)
-        if static_list_file:
-            self.static_list_file = Path(static_list_file)
-            logger.info("Static IP list file: {0}".format(static_list_file))
+        if zones_file:
+            self.zones_file = Path(zones_file)
+            logger.info("Zones file: {0}".format(zones_file))
 
     def load_records(self):
         if not self.needs_update():
             return
         records = []
-        if self.static_list_file:
-            dt, recs = self.load_static_ip_list()
+        if self.zones_file:
+            dt, recs = self.load_zones()
             if recs:
                 records.extend(recs)
-                self.last_load_time_static = dt
+                self.last_load_time_zones = dt
         
         if self.docker_socket:
             dt, recs = self.load_docker_ips()
@@ -126,11 +126,11 @@ class Resolver(ProxyResolver):
 
     def needs_update(self):
         res = False
-        if self.static_list_file:
-            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(self.static_list_file))
-            res = res or (self.last_load_time_static is None) or (mtime > self.last_load_time_static)
+        if self.zones_file:
+            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(self.zones_file))
+            res = res or (self.last_load_time_zones is None) or (mtime > self.last_load_time_zones)
             if res:
-                logger.info("Static file changed since {0}. Records need to be updated.".format(self.last_load_time_static))
+                logger.info("Zones file changed since {0}. Records need to be updated.".format(self.last_load_time_zones))
 
         has_docker_events = False
         if self.last_load_time_docker:
@@ -146,25 +146,34 @@ class Resolver(ProxyResolver):
         res = res or (self.last_load_time_docker is None) or ( has_docker_events )
         if res:
             logger.info("Docker events changed since {0}. Records need to be updated.".format(self.last_load_time_docker))
-        return res 
+        return res
+
+    def zone_lines(self):
+        current_line = ''
+        for line in open(self.zones_file, "r"):
+            if line.startswith('#'):
+                continue
+            line = line.rstrip('\r\n\t ')
+            if not line.startswith(' ') and current_line:
+                yield current_line
+                current_line = ''
+            current_line += line.lstrip('\r\n\t ')
+        if current_line:
+            yield current_line
         
-    def load_static_ip_list(self):
-        assert self.static_list_file.exists(), "file {0} does not exist".format(self.static_list_file)
-        logger.info("Loading static ip addresses from file - {0}".format(self.static_list_file))
+    def load_zones(self):
+        assert self.zones_file.exists(), "file {0} does not exist".format(self.zones_file)
+        logger.info("Loading zones data from file - {0}".format(self.zones_file))
         res = []
-        with open(self.static_list_file, "r", newline="") as csvfile:
-            reader = csv.DictReader(csvfile, fieldnames=["name", "ip_address"], delimiter="\t")
-            for row in reader:
-                try:
-                    name = row["name"]
-                    ip_address = row["ip_address"]
-                    zone_line = "{0} 300 IN A {1}".format(name, ip_address)
-                    rec = self.create_record("file", zone_line)
-                    if rec:
-                        res.append(rec)
-                except Exception as e:
-                    logger.error("{0}: {1}".format(e.__class__.__name__, e))
-                    pass
+
+        for zone_line in self.zone_lines():
+            try:
+                rec = self.create_record("file", zone_line)
+                if rec:
+                    res.append(rec)
+            except Exception as e:
+                logger.error("{0}: {1}".format(e.__class__.__name__, e))
+                pass
         records_time = datetime.datetime.utcnow()
         return (records_time, res)
 
@@ -221,7 +230,7 @@ if __name__ == "__main__":
     parser.add_argument("--tcp", default = os.getenv("TCP_PORT",0), help="Listen to TCP connections on specified port.", type = int)
     parser.add_argument("--udp", default = os.getenv("UDP_PORT",0),  help="Listen to UDP datagrams on specified port.", type = int )
     parser.add_argument("--upstream", default = os.getenv("UPSTREAM_DNS", "8.8.8.8"), help = "Upstream DNS server.")
-    parser.add_argument("--static-list-file", default = os.getenv("STATIC_LIST_FILE", None), help = "File containing list of static IP addresses.")
+    parser.add_argument("--zones-file", default = os.getenv("ZONES_FILE", None), help = "File containing list of DNS zones.")
     parser.add_argument("--docker-socket", default = os.getenv("DOCKER_SOCKET", "unix://var/run/docker.sock" ), help = "Docker socket for getting events.")
     parser.add_argument("--domain", default = os.getenv("DOMAIN", None), help = "Local domain.")
 
@@ -233,7 +242,7 @@ if __name__ == "__main__":
     domains = []
     if args.domain:
         domains.append(args.domain)
-    resolver = Resolver(domains, args.upstream, args.docker_socket, args.static_list_file)
+    resolver = Resolver(domains, args.upstream, args.docker_socket, args.zones_file)
 
 
     servers = []
