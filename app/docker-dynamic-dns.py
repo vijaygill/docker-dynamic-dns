@@ -10,6 +10,11 @@ from textwrap import wrap
 import time
 import socket
 
+try:
+    import socketserver
+except ImportError:
+    import SocketServer as socketserver
+
 from dnslib import DNSLabel, QTYPE, RR, dns, DNSRecord
 from dnslib.proxy import ProxyResolver
 from dnslib.server import DNSServer, DNSHandler
@@ -54,10 +59,8 @@ class Record:
         self.rr = rr
         self._rname = rr.rname
         self.rname = str(rr.rname)
-
-        rtype = QTYPE.get(rr.rtype)
-
-        rd_cls, self._rtype = TYPE_LOOKUP[rtype]
+        self.rtype = QTYPE.get(rr.rtype)
+        rd_cls, self._rtype = TYPE_LOOKUP[self.rtype]
 
 
     def match(self, q):
@@ -67,13 +70,13 @@ class Record:
         return self._rtype == QTYPE.SOA and q.qname.matchSuffix(self._rname)
 
     def __str__(self):
-        return "{0}[{1}] - {2}".format(self._rname, self._rtype, self.rr) 
+        return "{0}[{1}] - {2}".format(self.rname, self.rtype, self.rr) 
 
 
 class Resolver(ProxyResolver):
     def __init__(self, domains, upstream, docker_socket, zones_file = None):
         super().__init__(upstream, 53, 5)
-        self.records = {}
+        self.dns_table = []
         self.docker_socket = None
         self.zones_file = None
         self.last_load_time_zones = None
@@ -108,44 +111,51 @@ class Resolver(ProxyResolver):
                 self.last_load_time_docker = dt
         
         if records:
+            records = list(sorted(records, key=lambda x: x.rname))
+            self.dns_table = []
+            self.dns_table.extend(records)
+            max_col_len = max([ len(x.rname) for x in records])
+            log_fmt="{0:<" + str(max_col_len) + "} {1:<6} {2}"
             for rec in records:
-                self.records[rec.rname] = rec
-                logger.info("{0}".format(rec))
-            logger.info("{0} zone resource records generated.".format(len(self.records)))
-
-    def create_record(self, source, zone_line):
-        res = None
-        try:
-            ttl = 300
-            rrs = RR.fromZone(zone_line)
-            res = Record(rrs[0])
-            logger.debug("{0}: {1} - {2}".format(source, len(self.records), res))
-        except Exception as e:
-            logger.error("{0}: name: {1} ip_address: {2} -> {3}".format(e.__class__.__name__, name, ip_address, e))
-        return res
+                logger.info(log_fmt.format(rec.rname, rec.rtype, rec.rr))
+            logger.info("zone resource records generated: {0}.".format(len(records)))
+            logger.info("local dns table has {0} entries.".format(len(self.dns_table)))
 
     def needs_update(self):
         res = False
         if self.zones_file:
-            mtime = datetime.datetime.fromtimestamp(os.path.getmtime(self.zones_file))
-            res = res or (self.last_load_time_zones is None) or (mtime > self.last_load_time_zones)
-            if res:
-                logger.info("Zones file changed since {0}. Records need to be updated.".format(self.last_load_time_zones))
+            if self.last_load_time_zones:
+                mtime = datetime.datetime.fromtimestamp(os.path.getmtime(self.zones_file))
+                res = mtime > self.last_load_time_zones
+                if res:
+                    logger.info("Zones file changed since {0}. Records need to be updated.".format(self.last_load_time_zones))
+        else:
+            res = True
+            logger.info("Zones file was never loaded. Records need to be updated.")
 
-        has_docker_events = False
         if self.last_load_time_docker:
             docker_events = self.docker_client.events(decode = True, since = self.last_load_time_docker)
             for docker_event in docker_events:
                 if docker_event["Action"] == "start":
-                    has_docker_events = True
+                    res = True
                     break
                 if docker_event["Action"] == "stop":
-                    has_docker_events = True
+                    res = True
                     break
-        
-        res = res or (self.last_load_time_docker is None) or ( has_docker_events )
-        if res:
-            logger.info("Docker events changed since {0}. Records need to be updated.".format(self.last_load_time_docker))
+            if res:
+                logger.info("Data from docker changed since {0}. Records need to be updated.".format(self.last_load_time_docker))
+        else:
+            res = True
+            logger.info("Data from docker was never fetched. Records need to be updated.")
+        return res
+
+    def create_record(self, source, zone_line):
+        res = None
+        try:
+            rrs = RR.fromZone(zone_line)
+            res = Record(rrs[0])
+        except Exception as e:
+            logger.error("{0}: error in zone line {1}: {2}".format(e.__class__.__name__, zone_line, e))
         return res
 
     def zone_lines(self):
@@ -207,17 +217,70 @@ class Resolver(ProxyResolver):
     def resolve(self, request, handler):
         rname = str(request.q.qname)
         type_name = QTYPE[request.q.qtype]
-        reply = request.reply()
 
-        if rname in self.records.keys():
-            record = self.records[rname]
-            reply.add_answer(record.rr)
-            logger.info("{0}[{1}]: resolved from local records.".format(request.q.qname, type_name))
-            return reply
+        try:
+            reply = request.reply()
+            matches = list(filter(lambda rec: rec.match(request.q) or rec.sub_match(request.q) , self.dns_table))
+            if matches:
+                for record in matches:
+                    reply.add_answer(record.rr)
+                logger.info("{0}[{1}]: resolved from local dns table.".format(request.q.qname, type_name))
+                return reply
+        except:
+            pass
         
         upstream_data = super().resolve(request, handler)
         logger.info("{0}[{1}]: resolved from upstream DNS server".format(request.q.qname, type_name))
         return upstream_data
+
+
+class DNSHandlerWithoutLogger(socketserver.BaseRequestHandler):
+    udplen = 0                  # Max udp packet length (0 = ignore)
+
+    def handle(self):
+        if self.server.socket_type == socket.SOCK_STREAM:
+            self.protocol = 'tcp'
+            data = self.request.recv(8192)
+            if len(data) < 2:
+                return
+            length = struct.unpack("!H",bytes(data[:2]))[0]
+            while len(data) - 2 < length:
+                new_data = self.request.recv(8192)
+                if not new_data:
+                    break
+                data += new_data
+            data = data[2:]
+        else:
+            self.protocol = 'udp'
+            data,connection = self.request
+
+        try:
+            rdata = self.get_reply(data)
+
+            if self.protocol == 'tcp':
+                rdata = struct.pack("!H",len(rdata)) + rdata
+                self.request.sendall(rdata)
+            else:
+                connection.sendto(rdata,self.client_address)
+
+        except DNSError as e:
+            logger.log_error("{0}".format(e))
+
+    def get_reply(self,data):
+        request = DNSRecord.parse(data)
+
+        resolver = self.server.resolver
+        reply = resolver.resolve(request,self)
+
+        if self.protocol == 'udp':
+            rdata = reply.pack()
+            if self.udplen and len(rdata) > self.udplen:
+                truncated_reply = reply.truncate()
+                rdata = truncated_reply.pack()
+        else:
+            rdata = reply.pack()
+
+        return rdata
 
 def handle_sig(signum, frame):
     logger.info("pid={0}, got signal: {1}, stopping...".format(os.getpid(), signal.Signals(signum).name))
@@ -248,16 +311,15 @@ if __name__ == "__main__":
     servers = []
     if args.udp > 0:
         logger.info("Starting DNS server on port {0} (UDP).".format(args.udp))
-        servers.append(DNSServer(resolver, port = args.udp))
+        servers.append(DNSServer(resolver, port = args.udp, handler = DNSHandlerWithoutLogger))
     if args.tcp > 0:
         logger.info("Starting DNS server on port {0} (TCP).".format(args.tcp))
-        servers.append(DNSServer(resolver, port = args.tcp, tcp = True))
+        servers.append(DNSServer(resolver, port = args.tcp, tcp = True, handler = DNSHandlerWithoutLogger))
 
     logger.info("Upstream DNS server {0}".format(args.upstream))
     
 
     if servers:
-        resolver.load_records()
         
         for server in servers:
             server.start_thread()
