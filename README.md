@@ -7,7 +7,7 @@ It can also run in a container.
 
 Uses the fantastic library [dnslib](https://github.com/paulc/dnslib).
 
-Some ideas were taken from [this DNS server project](https://github.com/samuelcolvin/dnserver), especially around reading static IP addresses from a file.
+While searching for an existing project my requirement, I came across [this DNS server project](https://github.com/samuelcolvin/dnserver), which proved to be very helpful and I also liked the idea of using a zones file for some static data.
 
 ## Features ##
 * Uses docker events during run-time to make sure the list of containers and their IP addresses is up-to-date.
@@ -47,6 +47,7 @@ Following environment variables can be set to eliminate passing values via comma
 
 ### Docker-compose ###
 Sample docker-compose file is provided. it can be tested by running following command in the directory where the docker-compose.yml is located.
+Be default port 53 is used. You might need to change it if you are already running another DNS server locally.
 ```
 docker-compose up
 ```
