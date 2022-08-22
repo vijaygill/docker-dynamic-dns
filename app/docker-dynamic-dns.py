@@ -271,9 +271,9 @@ def handle_sig(signum, frame):
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_sig)
 
-    parser = argparse.ArgumentParser(description = "DNS Server to help resolving IP addresses of docker containers")
-    parser.add_argument("--tcp", default = os.getenv("TCP_PORT",0), help="Listen to TCP connections on specified port.", type = int)
-    parser.add_argument("--udp", default = os.getenv("UDP_PORT",0),  help="Listen to UDP datagrams on specified port.", type = int )
+    parser = argparse.ArgumentParser(description = "DNS Server to help resolving IP addresses of docker containers", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--tcp", default = os.getenv("TCP_PORT", 0), help="Listen to TCP connections on specified port.", type = int)
+    parser.add_argument("--udp", default = os.getenv("UDP_PORT", 53),  help="Listen to UDP datagrams on specified port.", type = int )
     parser.add_argument("--upstream", default = os.getenv("UPSTREAM_DNS", "8.8.8.8"), help = "Upstream DNS server.")
     parser.add_argument("--zones-file", default = os.getenv("ZONES_FILE", None), help = "File containing list of DNS zones.")
     parser.add_argument("--docker-socket", default = os.getenv("DOCKER_SOCKET", "unix://var/run/docker.sock" ), help = "Docker socket for getting events.")
