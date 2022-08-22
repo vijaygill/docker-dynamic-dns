@@ -37,31 +37,13 @@ logger = logging.getLogger(__name__)
 logger.addHandler(log_handler)
 logger.setLevel(logging.INFO)
 
-TYPE_LOOKUP = {
-    "A": (dns.A, QTYPE.A),
-    "AAAA": (dns.AAAA, QTYPE.AAAA),
-    "CAA": (dns.CAA, QTYPE.CAA),
-    "CNAME": (dns.CNAME, QTYPE.CNAME),
-    "DNSKEY": (dns.DNSKEY, QTYPE.DNSKEY),
-    "MX": (dns.MX, QTYPE.MX),
-    "NAPTR": (dns.NAPTR, QTYPE.NAPTR),
-    "NS": (dns.NS, QTYPE.NS),
-    "PTR": (dns.PTR, QTYPE.PTR),
-    "RRSIG": (dns.RRSIG, QTYPE.RRSIG),
-    "SOA": (dns.SOA, QTYPE.SOA),
-    "SRV": (dns.SRV, QTYPE.SRV),
-    "TXT": (dns.TXT, QTYPE.TXT),
-    "SPF": (dns.TXT, QTYPE.TXT),
-}
-
 class Record:
     def __init__(self, rr):
         self.rr = rr
-        self._rname = rr.rname
         self.rname = str(rr.rname)
         self.rtype = QTYPE.get(rr.rtype)
-        rd_cls, self._rtype = TYPE_LOOKUP[self.rtype]
-
+        self._rname = rr.rname
+        self._rtype = rr.rtype
 
     def match(self, q):
         return q.qname == self._rname and (q.qtype == QTYPE.ANY or q.qtype == self._rtype)
