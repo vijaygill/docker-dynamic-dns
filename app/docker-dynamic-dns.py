@@ -272,37 +272,35 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_sig)
 
     parser = argparse.ArgumentParser(description = "DNS Server to help resolving IP addresses of docker containers", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--tcp", default = os.getenv("TCP_PORT", 0), help="Listen to TCP connections on specified port.", type = int)
-    parser.add_argument("--udp", default = os.getenv("UDP_PORT", 53),  help="Listen to UDP datagrams on specified port.", type = int )
-    parser.add_argument("--upstream", default = os.getenv("UPSTREAM_DNS", "8.8.8.8"), help = "Upstream DNS server.")
-    parser.add_argument("--zones-file", default = os.getenv("ZONES_FILE", None), help = "File containing list of DNS zones.")
+    parser.add_argument("--tcp-port", default = os.getenv("TCP_PORT", 0), help="Listen to TCP connections on specified port. 0 to disable.", type = int)
+    parser.add_argument("--udp-port", default = os.getenv("UDP_PORT", 53),  help="Listen to UDP datagrams on specified port. 0 to disable.", type = int )
+    parser.add_argument("--upstream-dns-server", default = os.getenv("UPSTREAM_DNS_SERVER", "8.8.8.8"), help = "Upstream DNS server.")
+    parser.add_argument("--zones-file", default = os.getenv("ZONES_FILE", None), help = "File containing list of DNS zones. Disabled if no file provided.")
     parser.add_argument("--docker-socket", default = os.getenv("DOCKER_SOCKET", "unix://var/run/docker.sock" ), help = "Docker socket for getting events.")
     parser.add_argument("--domain", default = os.getenv("DOMAIN", None), help = "Local domain.")
 
     args = parser.parse_args()
 
-    if ((args.tcp == 0) and (args.udp == 0)):
+    if ((args.tcp_port == 0) and (args.udp_port == 0)):
         parser.error("Please select at least one of --udp or --tcp.")
 
     domains = []
     if args.domain:
         domains.append(args.domain)
-    resolver = Resolver(domains, args.upstream, args.docker_socket, args.zones_file)
+    resolver = Resolver(domains, args.upstream_dns_server, args.docker_socket, args.zones_file)
 
 
     servers = []
-    if args.udp > 0:
-        logger.info("Starting DNS server on port {0} (UDP).".format(args.udp))
-        servers.append(DNSServer(resolver, port = args.udp, handler = DNSHandlerWithoutLogger))
-    if args.tcp > 0:
+    if args.udp_port > 0:
+        logger.info("Starting DNS server on port {0} (UDP).".format(args.udp_port))
+        servers.append(DNSServer(resolver, port = args.udp_port, handler = DNSHandlerWithoutLogger))
+    if args.tcp_port > 0:
         logger.info("Starting DNS server on port {0} (TCP).".format(args.tcp))
-        servers.append(DNSServer(resolver, port = args.tcp, tcp = True, handler = DNSHandlerWithoutLogger))
+        servers.append(DNSServer(resolver, port = args.tcp_port, tcp = True, handler = DNSHandlerWithoutLogger))
 
-    logger.info("Upstream DNS server {0}".format(args.upstream))
+    logger.info("Upstream DNS server {0}".format(args.upstream_dns_server))
     
-
     if servers:
-        
         for server in servers:
             server.start_thread()
         

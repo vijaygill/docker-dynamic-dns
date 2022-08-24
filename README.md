@@ -18,21 +18,23 @@ While searching for an existing project my requirement, I came across [this DNS 
 ## Usage ##
 
 ```
-usage: docker-dynamic-dns.py [-h] [--tcp TCP] [--udp UDP] [--upstream UPSTREAM] [--zones-file ZONES_FILE] [--docker-socket DOCKER_SOCKET]
-                             [--domain DOMAIN]
+usage: docker-dynamic-dns.py [-h] [--tcp-port TCP_PORT] [--udp-port UDP_PORT] [--upstream-dns-server UPSTREAM_DNS_SERVER]
+                             [--zones-file ZONES_FILE] [--docker-socket DOCKER_SOCKET] [--domain DOMAIN]
 
 DNS Server to help resolving IP addresses of docker containers
 
 optional arguments:
   -h, --help            show this help message and exit
-  --tcp TCP             Listen to TCP connections on specified port. (default: 0)
-  --udp UDP             Listen to UDP datagrams on specified port. (default: 53)
-  --upstream UPSTREAM   Upstream DNS server. (default: 8.8.8.8)
+  --tcp-port TCP_PORT   Listen to TCP connections on specified port. 0 to disable. (default: 0)
+  --udp-port UDP_PORT   Listen to UDP datagrams on specified port. 0 to disable. (default: 53)
+  --upstream-dns-server UPSTREAM_DNS_SERVER
+                        Upstream DNS server. (default: 8.8.8.8)
   --zones-file ZONES_FILE
-                        File containing list of DNS zones. (default: None)
+                        File containing list of DNS zones. Disabled if no file provided. (default: None)
   --docker-socket DOCKER_SOCKET
                         Docker socket for getting events. (default: unix://var/run/docker.sock)
   --domain DOMAIN       Local domain. (default: None)
+
 ```
 
 ## Docker ##
