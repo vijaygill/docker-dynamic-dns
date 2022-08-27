@@ -42,7 +42,7 @@ optional arguments:
 Following environment variables can be set to eliminate passing values via command-line parameters
 * TCP_PORT
 * UDP_PORT
-* UPSTREAM_DNS
+* UPSTREAM_DNS_SERVER
 * ZONES_FILE
 * DOCKER_SOCKET
 * DOMAIN

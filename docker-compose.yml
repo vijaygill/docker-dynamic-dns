@@ -10,7 +10,7 @@ services:
       restart: unless-stopped
       environment:
         - UDP_PORT=53
-        - UPSTREAM_DNS=8.8.8.8
+        - UPSTREAM_DNS_SERVER=8.8.8.8
         - DOMAIN=mydomain.home
         - ZONES_FILE=/config/sample-zones.txt
       networks:
