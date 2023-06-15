@@ -11,6 +11,7 @@ services:
       environment:
         - UDP_PORT=53
         - UPSTREAM_DNS_SERVER=8.8.8.8
+        - HOST_IP=192.168.0.31
         - DOMAIN=mydomain.home
         - ZONES_FILE=/config/sample-zones.txt
       networks:

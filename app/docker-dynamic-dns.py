@@ -56,7 +56,7 @@ class Record:
 
 
 class Resolver(ProxyResolver):
-    def __init__(self, domains, upstream, docker_socket, zones_file = None):
+    def __init__(self, domains, upstream, docker_socket, zones_file = None, host_ip = None):
         super().__init__(upstream, 53, 5)
         self.dns_table = []
         self.docker_socket = None
@@ -75,6 +75,9 @@ class Resolver(ProxyResolver):
         if zones_file:
             self.zones_file = Path(zones_file)
             logger.info("Zones file: {0}".format(zones_file))
+        if host_ip:
+            self.host_ip = host_ip
+            logger.info("Host IP: {0}".format(host_ip))
 
     def load_records(self):
         if not self.needs_update():
@@ -172,27 +175,55 @@ class Resolver(ProxyResolver):
     def load_docker_ips(self):
         res = []
         logger.info("Loading ip addresses docker client - {0}".format(self.docker_socket))
-        for container in self.docker_client.containers.list():
-            name = container.name
-            hostname = container.attrs["Config"]["Hostname"]
-            networkmode = container.attrs["HostConfig"]["NetworkMode"]
-            if networkmode == "default":
-                continue
-            ip_address = container.attrs["NetworkSettings"]["Networks"][networkmode]["IPAddress"]
-            if ip_address:
-                #logger.info("{0:<30} {1:<30} - {2:<18}".format(name + ":" + networkmode, hostname, ip_address))
+        containers = None
+        for attempt in range(0, 5):
+            try:
+                containers_temp = self.docker_client.containers.list()
+                if containers_temp:
+                    containers = containers_temp
+                    break
+            except:
+                pass
+        if not containers:
+            logger.warn("No containers were obtained from docker-Python API.")
+            return res
+        for container in containers:
+            try:
+                container.reload()
+                ip_addresses = []
+                name = container.name
+                hostname = container.attrs["Config"]["Hostname"]
+                networkmode = container.attrs["HostConfig"]["NetworkMode"]
+                if (networkmode == "default") or (networkmode == "host"):
+                    ip_address = self.host_ip
+                    if ip_address:
+                        ip_addresses.append(ip_address)
+                else:
+                    ip_address = container.attrs['NetworkSettings']['IPAddress']
+                    if ip_address:
+                        ip_addresses.append(ip_address)
+                for nwname in container.attrs["NetworkSettings"]["Networks"]:
+                    nw = container.attrs["NetworkSettings"]["Networks"][nwname]
+                    ip_address = nw["IPAddress"]
+                    if ip_address:
+                        ip_addresses.append(ip_address)
+                logger.info("DEBUG 001 - {0:<30} {1:<30} - {2:<18}".format(name + ":" + networkmode, hostname, ",".join(ip_addresses)))
                 names = []
                 names += [ name ] 
                 names += [ name + "." + x for x in self.domains]
                 for name in names:
                     try:
-                        zone_line = "{0} 300 IN A {1}".format(name, ip_address)
-                        rec = self.create_record("docker", zone_line)
-                        if rec:
-                            res.append(rec)
+                        for ip_address in ip_addresses:
+                            zone_line = "{0} 300 IN A {1}".format(name, ip_address)
+                            rec = self.create_record("docker", zone_line)
+                            if rec:
+                                res.append(rec)
                     except Exception as e:
                         logger.error("{0}: {1}".format(e.__class__.__name__, e))
                         pass
+            except Exception as inst:
+                logger.info("*** DEBUG 001 - {0}".format(inst))
+                pass
         records_time = datetime.datetime.utcnow()
         return (records_time, res)
 
@@ -278,6 +309,7 @@ if __name__ == "__main__":
     parser.add_argument("--zones-file", default = os.getenv("ZONES_FILE", None), help = "File containing list of DNS zones. Disabled if no file provided.")
     parser.add_argument("--docker-socket", default = os.getenv("DOCKER_SOCKET", "unix://var/run/docker.sock" ), help = "Docker socket for getting events.")
     parser.add_argument("--domain", default = os.getenv("DOMAIN", None), help = "Local domain.")
+    parser.add_argument("--host-ip", default = os.getenv("HOST_IP", ""), help = "Host IP Address.")
 
     args = parser.parse_args()
 
@@ -287,7 +319,7 @@ if __name__ == "__main__":
     domains = []
     if args.domain:
         domains.append(args.domain)
-    resolver = Resolver(domains, args.upstream_dns_server, args.docker_socket, args.zones_file)
+    resolver = Resolver(domains, args.upstream_dns_server, args.docker_socket, args.zones_file, args.host_ip)
 
 
     servers = []
@@ -299,6 +331,7 @@ if __name__ == "__main__":
         servers.append(DNSServer(resolver, port = args.tcp_port, tcp = True, handler = DNSHandlerWithoutLogger))
 
     logger.info("Upstream DNS server {0}".format(args.upstream_dns_server))
+    logger.info("Host IP Address     {0}".format(args.host_ip))
     
     if servers:
         for server in servers:
