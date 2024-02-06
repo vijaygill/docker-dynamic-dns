@@ -49,7 +49,7 @@ Following environment variables can be set to eliminate passing values via comma
 
 ### Docker-compose ###
 Sample docker-compose file is provided. it can be tested by running following command in the directory where the docker-compose.yml is located.
-Be default port 53 is used. You might need to change it if you are already running another DNS server locally.
+By default, port 53 is used. You might need to change it if you are already running another DNS server locally.
 ```
 docker-compose up
 ```
